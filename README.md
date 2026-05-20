@@ -4,7 +4,7 @@ A [TypeWhisper](https://github.com/TypeWhisper/typewhisper-mac) `MemoryStoragePl
 
 ## Status
 
-**Pre-release (v0.2.0)** — builds + passes unit tests against a mocked MemPalace MCP API. Has not yet been validated against the live `api.mempalace.cloud` endpoint or shipped as a `.bundle` for TypeWhisper users.
+**v0.3.0** — live-tested against `api.mempalace.cloud`. Apple Silicon only (arm64). 11 unit tests passing.
 
 ## How it works
 
@@ -61,13 +61,16 @@ Open Settings → Integrations → MemPalace and provide:
 - **API Key:** stored in the macOS Keychain via TypeWhisper's `HostServices.storeSecret`.
 - **Wing / Room:** target filing location. The Settings UI fetches available wings/rooms from the MemPalace `mempalace_list_wings` and `mempalace_list_rooms` tools and exposes them as pickers.
 
-## Known limitations (v0.2)
+## v0.3 features
+
+- **Offline queue:** Failed `store()` calls are written to `pluginDataDirectory/queue.json` and replayed by a background drain loop with exponential backoff. Memories never silently lost on network blip.
+- **Lazy reconcile:** Every Nth `listAll()` call samples 8 random sidecar entries and drops mappings whose drawer was deleted directly in MemPalace's UI.
+- **Synchronous activate/deactivate flushes:** UI badge primed from disk before activate returns; deactivate blocks (≤2s) so a host quit doesn't lose the last mutations.
+
+## Known limitations (v0.3)
 
 - No cross-device sync of TypeWhisper-specific fields (`confidence`, `accessCount`, `lastAccessedAt`). The sidecar is local to each Mac.
-- No offline write queue: failed `store()` calls throw and propagate to the host. TypeWhisper logs the error; the memory is **not** retried automatically.
-- No lazy-reconcile pass: if a drawer is deleted directly in MemPalace's UI, the sidecar will retain a stale `drawer_id` mapping until the user clears or rebuilds.
-
-These will likely land in v0.3 / v1.0.
+- `accessCount` increments on every search hit, not just on actual memory consumption by TypeWhisper.
 
 ## License
 

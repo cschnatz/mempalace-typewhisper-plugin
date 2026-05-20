@@ -259,19 +259,21 @@ final class MemPalacePluginTests: XCTestCase {
         XCTAssertEqual(listed.first?.content, "persist me")
     }
 
-    func testStoreThrowsWhenConfigIncomplete() async throws {
+    func testStoreEnqueuesWhenClientOffline() async throws {
         let stub = StubMCP()
         let host = try PluginTestHostServices()
         let plugin = makePlugin(http: stub)
         plugin.activate(host: host)
-        XCTAssertFalse(plugin.isReady)
+        XCTAssertFalse(plugin.isReady, "no api key → not ready")
 
-        do {
-            try await plugin.store([MemoryEntry(content: "x", type: .fact)])
-            XCTFail("expected throw")
-        } catch {
-            // ok
-        }
+        // v0.3: store() no longer throws when client is offline. It enqueues
+        // and returns silently; drain loop replays when client becomes ready.
+        try await plugin.store([MemoryEntry(content: "queued-offline", type: .fact)])
+        XCTAssertEqual(stub.recorded.count, 0, "no HTTP calls without client")
+
+        // Sidecar must not contain the entry (server never confirmed).
+        let listed = try await plugin.listAll(offset: 0, limit: 10)
+        XCTAssertEqual(listed.count, 0)
     }
 
     func testUpdateConfigRejectsEmptyWing() throws {
@@ -298,5 +300,44 @@ final class MemPalacePluginTests: XCTestCase {
         var bad = plugin.currentConfig()
         bad.baseURL = "http://cloud.example.com"
         XCTAssertFalse(plugin.updateConfig(bad), "cloud mode must reject http://")
+    }
+
+    func testStoreEnqueuesOnNetworkFailureAndThrows() async throws {
+        let stub = StubMCP()
+        stub.responder = { _, _ in
+            (500, ["error": "upstream"])
+        }
+        let host = try configuredHost()
+        let plugin = makePlugin(http: stub)
+        plugin.activate(host: host)
+
+        let entry = MemoryEntry(content: "to-queue", type: .fact)
+        do {
+            try await plugin.store([entry])
+            XCTFail("store should have thrown")
+        } catch {
+            // expected
+        }
+
+        // Sidecar should NOT have the entry (server rejected); queue should.
+        let listed = try await plugin.listAll(offset: 0, limit: 10)
+        XCTAssertEqual(listed.count, 0, "failed store must not appear in sidecar")
+    }
+
+    func testListAllReturnsSidecarEntriesAfterSuccessfulStore() async throws {
+        let stub = StubMCP()
+        stub.responder = { _, _ in
+            (200, ["added": true, "drawer_id": "d-ok", "result": "ok"])
+        }
+        let host = try configuredHost()
+        let plugin = makePlugin(http: stub)
+        plugin.activate(host: host)
+
+        let entry = MemoryEntry(content: "ok-stored", type: .fact)
+        try await plugin.store([entry])
+
+        let listed = try await plugin.listAll(offset: 0, limit: 10)
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.content, "ok-stored")
     }
 }

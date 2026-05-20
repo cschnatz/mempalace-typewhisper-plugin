@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Build MemPalacePlugin.bundle + ZIP for TypeWhisper.
+# Build MemPalacePlugin.bundle + ZIP for TypeWhisper (Apple Silicon only).
 #
 # Usage:
-#   scripts/build-bundle.sh                 # arm64 + x86_64 universal
-#   scripts/build-bundle.sh --arch arm64    # arm64 only (faster)
+#   scripts/build-bundle.sh
 #
 # Output:
 #   build/MemPalacePlugin.bundle    # macOS plugin bundle
@@ -12,19 +11,9 @@
 set -euo pipefail
 
 # --- Args ---
-ARCHS=("arm64" "x86_64")
-for arg in "$@"; do
-  case "$arg" in
-    --arch)
-      shift
-      ARCHS=("$1")
-      shift
-      ;;
-    --arch=*)
-      ARCHS=("${arg#*=}")
-      ;;
-  esac
-done
+# Apple Silicon only. TypeWhisper 1.4+ users are overwhelmingly on arm64
+# and Intel builds add ~3x compile time + SDK build per arch.
+ARCHS=("arm64")
 
 # --- Paths ---
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,18 +40,16 @@ echo "Bundle ID:       $BUNDLE_ID"
 echo "Principal class: $PRINCIPAL"
 echo "Architectures:   ${ARCHS[*]}"
 
-# --- Step 1: Build SDK once per architecture (release config) ---
+# --- Step 1: Build SDK (release, arm64) ---
+ARCH="${ARCHS[0]}"
 echo ""
-echo "--- Building TypeWhisperPluginSDK (release) ---"
-(cd "$SDK_PATH" && swift build -c release --product TypeWhisperPluginSDK) >/dev/null
-
-# Locate SDK build output (swift uses .build/<triple>/release/)
-SDK_RELEASE_DIR=$(find "$SDK_PATH/.build" -type d -path '*-apple-macosx/release' -maxdepth 3 | head -1)
+echo "--- Building TypeWhisperPluginSDK (release, $ARCH) ---"
+(cd "$SDK_PATH" && swift build -c release --product TypeWhisperPluginSDK --arch "$ARCH") >/dev/null
+SDK_RELEASE_DIR=$(find "$SDK_PATH/.build" -type d -path "*${ARCH}-apple-macosx/release" -maxdepth 3 | head -1)
 if [[ -z "$SDK_RELEASE_DIR" ]] || [[ ! -e "$SDK_RELEASE_DIR/Modules/TypeWhisperPluginSDK.swiftmodule" ]]; then
-  echo "ERROR: SDK swiftmodule not found under $SDK_PATH/.build" >&2
+  echo "ERROR: SDK swiftmodule for $ARCH not found under $SDK_PATH/.build" >&2
   exit 1
 fi
-SDK_MODULES="$SDK_RELEASE_DIR/Modules"
 
 # --- Step 2: Build per-arch Mach-O bundles ---
 rm -rf "$OUT_DIR"
@@ -80,7 +67,7 @@ for ARCH in "${ARCHS[@]}"; do
     -Xlinker -bundle \
     -module-name MemPalacePlugin \
     -target "$ARCH-apple-macos14.0" \
-    -I "$SDK_MODULES" \
+    -I "$SDK_RELEASE_DIR/Modules" \
     -L "$SDK_RELEASE_DIR" \
     -lTypeWhisperPluginSDK \
     -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \

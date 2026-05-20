@@ -1,10 +1,11 @@
 {
     "id": "com.mempalace.memory",
     "name": "MemPalace",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "minHostVersion": "1.4.0",
     "sdkCompatibilityVersion": "v1",
     "minOSVersion": "14.0",
+    "supportedArchitectures": ["arm64"],
     "author": "MemPalace",
     "description": "Store and search memories in MemPalace Cloud or a self-hosted MemPalace instance. Memories are filed into a user-chosen wing and room, with shared knowledge-graph tunneling on the server.",
     "descriptions": {

@@ -103,6 +103,31 @@ struct MemPalaceListRoomsResult: Decodable {
     }
 }
 
+// get_drawer: {"drawer": {"drawer_id": ..., "content": ..., "wing": ..., "room": ..., "metadata": {...}}}
+//             OR {"drawer": {"error": "Drawer not found: ..."}}
+struct MemPalaceGetDrawerResult: Decodable {
+    let drawer: DrawerInner?
+
+    struct DrawerInner: Decodable {
+        let drawer_id: String?
+        let content: String?
+        let wing: String?
+        let room: String?
+        let error: String?
+    }
+
+    var notFound: Bool {
+        if let err = drawer?.error, err.lowercased().contains("not found") {
+            return true
+        }
+        return false
+    }
+
+    var exists: Bool {
+        drawer?.drawer_id != nil && drawer?.error == nil
+    }
+}
+
 // MARK: - HTTP abstraction
 
 protocol MemPalaceMCPHTTP: Sendable {
@@ -208,6 +233,17 @@ final class MemPalaceMCPClient {
 
     func ping() async throws {
         let _: EmptyDecodable = try await callTool("mempalace_status", arguments: [:])
+    }
+
+    /// Returns true if the drawer exists on the server, false if MemPalace
+    /// reports "not found". Throws on other errors (network, auth).
+    func drawerExists(_ drawerId: String) async throws -> Bool {
+        let result: MemPalaceGetDrawerResult = try await callTool(
+            "mempalace_get_drawer",
+            arguments: ["drawer_id": drawerId]
+        )
+        if result.notFound { return false }
+        return result.exists
     }
 
     // MARK: - Internals

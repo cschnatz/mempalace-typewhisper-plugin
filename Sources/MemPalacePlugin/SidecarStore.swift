@@ -81,4 +81,13 @@ actor SidecarStore {
         }
     }
 
+    /// Synchronous helper: count records on disk without entering actor context.
+    /// Used to prime UI badge in plugin activate() before any actor task runs.
+    static nonisolated func countOnDisk(url: URL) -> Int {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              let array = try? JSONDecoder.memoryDecoder.decode([SidecarRecord].self, from: data)
+        else { return 0 }
+        return array.count
+    }
 }

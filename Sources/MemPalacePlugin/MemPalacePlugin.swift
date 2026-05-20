@@ -32,6 +32,11 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
     fileprivate var apiKey: String?
     fileprivate var client: MemPalaceMCPClient?
     fileprivate var sidecar: SidecarStore?
+    fileprivate var queue: OfflineQueue?
+    private var queueDrainTask: Task<Void, Never>?
+    private var reconcileCallCounter: Int = 0
+    private let reconcileEveryNCalls = 10
+    private let reconcileBatchSize = 8
     private var clientFactory: (URL, String) -> MemPalaceMCPClient = { url, key in
         MemPalaceMCPClient(baseURL: url, apiKey: key)
     }
@@ -53,22 +58,42 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
         let sidecarURL = host.pluginDataDirectory.appendingPathComponent("sidecar.json")
         let store = SidecarStore(url: sidecarURL)
         self.sidecar = store
-        // Prime cached count from disk-loaded sidecar.
-        Task { @MainActor [weak self] in
-            let count = await store.count
-            self?.cachedMemoryCount = count
-        }
+        // Prime cached count synchronously from disk so the host UI sees a
+        // consistent value from the first paint, not 0 → real-count flicker.
+        cachedMemoryCount = SidecarStore.countOnDisk(url: sidecarURL)
+
+        let queueURL = host.pluginDataDirectory.appendingPathComponent("queue.json")
+        let q = OfflineQueue(url: queueURL)
+        self.queue = q
+
         rebuildClient()
+
+        // Background drain loop — retry queued stores while client + config valid.
+        queueDrainTask?.cancel()
+        queueDrainTask = Task { [weak self] in
+            await self?.runQueueDrainLoop(queue: q)
+        }
     }
 
     public func deactivate() {
-        if let sidecar {
-            Task { await sidecar.flush() }
+        queueDrainTask?.cancel()
+        queueDrainTask = nil
+        // Synchronous flush: block until persist completes so a host quit
+        // immediately after deactivate() does not lose the last mutations.
+        if let sidecar, let queue = self.queue {
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                await sidecar.flush()
+                await queue.flush()
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 2)
         }
         host = nil
         client = nil
         apiKey = nil
         sidecar = nil
+        queue = nil
         cachedMemoryCount = 0
     }
 
@@ -79,21 +104,43 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
     // MARK: - MemoryStoragePlugin
 
     public func store(_ entries: [MemoryEntry]) async throws {
-        guard let client, let sidecar else { throw MemPalaceMCPError.missingAPIKey }
+        guard let sidecar, let queue else { throw MemPalaceMCPError.missingAPIKey }
         guard config.isValid else { throw MemPalaceMCPError.toolError("invalid config") }
 
+        // If client is offline (no API key, invalid URL): enqueue all and return.
+        // The drain loop will replay when client becomes ready.
+        guard let client else {
+            for entry in entries {
+                await queue.enqueue(entry, wing: config.wing, room: config.room)
+            }
+            logger.info("store: client unavailable, enqueued \(entries.count) memories")
+            return
+        }
+
+        var firstError: Error?
         for entry in entries {
-            let drawerId = try await client.addDrawer(
-                content: entry.content,
-                wing: config.wing,
-                room: config.room,
-                sourceFile: MemPalaceSourceFile.encode(entry.id)
-            )
-            await sidecar.upsert(entry, drawerId: drawerId)
+            do {
+                let drawerId = try await client.addDrawer(
+                    content: entry.content,
+                    wing: config.wing,
+                    room: config.room,
+                    sourceFile: MemPalaceSourceFile.encode(entry.id)
+                )
+                await sidecar.upsert(entry, drawerId: drawerId)
+            } catch {
+                // Network / API error: enqueue for retry, keep trying remaining entries.
+                logger.notice("store failed for entry \(entry.id.uuidString); enqueued: \(error.localizedDescription)")
+                await queue.enqueue(entry, wing: config.wing, room: config.room)
+                if firstError == nil { firstError = error }
+            }
         }
         await sidecar.flush()
         cachedMemoryCount = await sidecar.count
         host?.notifyCapabilitiesChanged()
+
+        // Surface the first error to the host so the user gets a signal, but
+        // the memory is not lost — it lives in the queue.
+        if let error = firstError { throw error }
     }
 
     public func search(_ query: MemoryQuery) async throws -> [TypeWhisperPluginSDK.MemorySearchResult] {
@@ -162,6 +209,16 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
 
     public func listAll(offset: Int, limit: Int) async throws -> [MemoryEntry] {
         guard let sidecar else { return [] }
+
+        // Lazy reconcile every Nth call: drop sidecar entries whose drawer
+        // disappeared on the server (e.g. user deleted directly in MemPalace UI).
+        reconcileCallCounter += 1
+        if reconcileCallCounter % reconcileEveryNCalls == 0 {
+            Task { [weak self] in
+                await self?.runLazyReconcile()
+            }
+        }
+
         return await sidecar.entries(offset: offset, limit: limit)
     }
 
@@ -235,5 +292,87 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
               let config = try? JSONDecoder().decode(MemPalaceConfig.self, from: data)
         else { return nil }
         return config
+    }
+
+    // MARK: - Offline drain loop
+
+    private func runQueueDrainLoop(queue: OfflineQueue) async {
+        // Exponential backoff between drain attempts: 5s → 10s → 20s → ... cap 5min.
+        var delaySeconds: UInt64 = 5
+        while !Task.isCancelled {
+            // Sleep first to give activate() time to settle.
+            try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+            if Task.isCancelled { break }
+
+            guard let client, let sidecar else {
+                delaySeconds = min(delaySeconds * 2, 300)
+                continue
+            }
+            if await queue.isEmpty {
+                delaySeconds = 30  // idle poll
+                continue
+            }
+
+            let batch = await queue.nextBatch(limit: 5)
+            var anyProgress = false
+            for item in batch {
+                do {
+                    let drawerId = try await client.addDrawer(
+                        content: item.entry.content,
+                        wing: item.wing,
+                        room: item.room,
+                        sourceFile: MemPalaceSourceFile.encode(item.entry.id)
+                    )
+                    await sidecar.upsert(item.entry, drawerId: drawerId)
+                    await queue.remove(item.entry.id)
+                    anyProgress = true
+                } catch {
+                    logger.notice("queue retry failed for \(item.entry.id.uuidString) attempt \(item.attemptCount): \(error.localizedDescription)")
+                    // Leave in queue; loop will retry after backoff.
+                    break
+                }
+            }
+            if anyProgress {
+                await sidecar.flush()
+                cachedMemoryCount = await sidecar.count
+                host?.notifyCapabilitiesChanged()
+                delaySeconds = 5  // reset backoff on success
+            } else {
+                delaySeconds = min(delaySeconds * 2, 300)
+            }
+        }
+    }
+
+    // MARK: - Lazy reconcile
+
+    private func runLazyReconcile() async {
+        guard let client, let sidecar else { return }
+        // Sample N random drawer ids from sidecar; if MemPalace says they don't
+        // exist, drop the sidecar entries (user deleted via MemPalace UI).
+        let allIds = await sidecar.allDrawerIds()
+        guard !allIds.isEmpty else { return }
+        let sample = allIds.shuffled().prefix(reconcileBatchSize)
+        var toDropDrawers: [String] = []
+        for drawerId in sample {
+            do {
+                let exists = try await client.drawerExists(drawerId)
+                if !exists { toDropDrawers.append(drawerId) }
+            } catch {
+                // Network / auth error: bail entirely, retry next time.
+                return
+            }
+        }
+        guard !toDropDrawers.isEmpty else { return }
+
+        for drawerId in toDropDrawers {
+            let uuids = await sidecar.idsPointing(at: drawerId)
+            for uuid in uuids {
+                await sidecar.remove(uuid)
+            }
+        }
+        await sidecar.flush()
+        cachedMemoryCount = await sidecar.count
+        logger.info("reconcile dropped \(toDropDrawers.count) stale drawer mappings")
+        host?.notifyCapabilitiesChanged()
     }
 }

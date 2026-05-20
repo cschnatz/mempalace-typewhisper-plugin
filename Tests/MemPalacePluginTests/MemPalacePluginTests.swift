@@ -63,6 +63,7 @@ final class StubMCP: MemPalaceMCPHTTP, @unchecked Sendable {
     }
 }
 
+@MainActor
 final class MemPalacePluginTests: XCTestCase {
 
     private func makePlugin(http: StubMCP) -> MemPalacePlugin {

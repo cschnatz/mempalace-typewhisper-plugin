@@ -7,6 +7,10 @@
 # Output:
 #   build/MemPalacePlugin.bundle    # macOS plugin bundle
 #   build/MemPalacePlugin.zip       # zipped bundle for "Install from File"
+#
+# IMPORTANT: keep the release asset name `MemPalacePlugin.zip` stable across
+# versions so the community-registry downloadURL doesn't have to change every
+# release. Use a versioned RELEASE TITLE / TAG instead.
 
 set -euo pipefail
 

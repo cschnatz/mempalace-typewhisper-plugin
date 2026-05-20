@@ -302,7 +302,11 @@ final class MemPalacePluginTests: XCTestCase {
         XCTAssertFalse(plugin.updateConfig(bad), "cloud mode must reject http://")
     }
 
-    func testStoreEnqueuesOnNetworkFailureAndThrows() async throws {
+    func testStoreEnqueuesOnNetworkFailureWithoutThrowing() async throws {
+        // SeoFood maintainer feedback on PR #588: if the offline queue is the
+        // acceptance path, store() must NOT throw on network failure — the
+        // entry is durably queued and will replay. TypeWhisper's MemoryService
+        // treats a throw as "memory rejected" which is misleading here.
         let stub = StubMCP()
         stub.responder = { _, _ in
             (500, ["error": "upstream"])
@@ -312,12 +316,7 @@ final class MemPalacePluginTests: XCTestCase {
         plugin.activate(host: host)
 
         let entry = MemoryEntry(content: "to-queue", type: .fact)
-        do {
-            try await plugin.store([entry])
-            XCTFail("store should have thrown")
-        } catch {
-            // expected
-        }
+        try await plugin.store([entry])  // must not throw — entry is queued
 
         // Sidecar should NOT have the entry (server rejected); queue should.
         let listed = try await plugin.listAll(offset: 0, limit: 10)

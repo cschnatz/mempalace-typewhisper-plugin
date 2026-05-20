@@ -8,13 +8,13 @@ let package = Package(
         .library(name: "MemPalacePlugin", targets: ["MemPalacePlugin"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/TypeWhisper/typewhisper-mac.git", branch: "main"),
+        .package(path: "vendor/typewhisper-mac/TypeWhisperPluginSDK"),
     ],
     targets: [
         .target(
             name: "MemPalacePlugin",
             dependencies: [
-                .product(name: "TypeWhisperPluginSDK", package: "typewhisper-mac"),
+                .product(name: "TypeWhisperPluginSDK", package: "TypeWhisperPluginSDK"),
             ],
             path: "Sources/MemPalacePlugin",
             resources: [
@@ -25,8 +25,8 @@ let package = Package(
             name: "MemPalacePluginTests",
             dependencies: [
                 "MemPalacePlugin",
-                .product(name: "TypeWhisperPluginSDK", package: "typewhisper-mac"),
-                .product(name: "TypeWhisperPluginSDKTesting", package: "typewhisper-mac"),
+                .product(name: "TypeWhisperPluginSDK", package: "TypeWhisperPluginSDK"),
+                .product(name: "TypeWhisperPluginSDKTesting", package: "TypeWhisperPluginSDK"),
             ],
             path: "Tests/MemPalacePluginTests"
         ),

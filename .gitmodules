@@ -1,0 +1,3 @@
+[submodule "vendor/typewhisper-mac"]
+	path = vendor/typewhisper-mac
+	url = https://github.com/TypeWhisper/typewhisper-mac.git

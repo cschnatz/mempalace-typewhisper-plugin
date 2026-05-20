@@ -54,9 +54,9 @@ public final class MemPalacePlugin: NSObject, TypeWhisperPlugin, MemoryStoragePl
         let store = SidecarStore(url: sidecarURL)
         self.sidecar = store
         // Prime cached count from disk-loaded sidecar.
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             let count = await store.count
-            await MainActor.run { self?.cachedMemoryCount = count }
+            self?.cachedMemoryCount = count
         }
         rebuildClient()
     }

@@ -6,3 +6,4 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 .claude/worktrees/
 Package.resolved
+build/

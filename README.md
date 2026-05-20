@@ -28,9 +28,28 @@ swift test
 
 The submodule at `vendor/typewhisper-mac` provides the `TypeWhisperPluginSDK` Swift Package.
 
+## Build the installable bundle
+
+```bash
+git submodule update --init --recursive   # one-time
+scripts/build-bundle.sh                   # arm64 + x86_64 universal
+# or: scripts/build-bundle.sh --arch arm64 # arm64 only (faster on M-series)
+```
+
+Output:
+
+- `build/MemPalacePlugin.bundle` — the macOS plugin bundle
+- `build/MemPalacePlugin.zip` — zipped bundle for distribution
+
+## Install in TypeWhisper
+
+1. TypeWhisper menubar → **Settings → Integrations**
+2. **+ Install from File** (top-right) → select `build/MemPalacePlugin.zip`
+3. **Memory → MemPalace** appears → enable, then click the gear icon to configure API key + wing/room.
+
 ## Distribution (planned)
 
-- **v1:** Manual install via TypeWhisper Settings → Integrations → "Install from File…". The compiled `.bundle` will be published as a ZIP attached to GitHub Releases.
+- **v1:** GitHub Releases attaches `MemPalacePlugin.zip`. Users download + Install from File.
 - **v2:** Submit to TypeWhisper's community plugin registry (`PluginRegistry/community-v1/com.mempalace.memory.json`) once the upstream community-build pipeline is finalized.
 
 ## Configuration

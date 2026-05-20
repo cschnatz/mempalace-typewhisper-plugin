@@ -95,7 +95,7 @@ final class MemPalacePluginTests: XCTestCase {
         let stub = StubMCP()
         stub.responder = { toolName, _ in
             XCTAssertEqual(toolName, "mempalace_add_drawer")
-            return (200, ["success": true, "drawer_id": "drawer_abc", "wing": "wing_test", "room": "captures"])
+            return (200, ["added": true, "drawer_id": "drawer_abc", "result": "{'success': True, 'drawer_id': 'drawer_abc'}"])
         }
 
         let host = try configuredHost()
@@ -126,7 +126,7 @@ final class MemPalacePluginTests: XCTestCase {
         stub.responder = { tool, _ in
             switch tool {
             case "mempalace_add_drawer":
-                return (200, ["success": true, "drawer_id": "d1", "wing": "wing_test", "room": "captures"])
+                return (200, ["added": true, "drawer_id": "d1", "result": "{'success': True}"])
             case "mempalace_search":
                 let hit: [String: Any] = [
                     "text": "Cats are great",
@@ -137,7 +137,8 @@ final class MemPalacePluginTests: XCTestCase {
                     "similarity": 0.88,
                     "distance": 0.12,
                 ]
-                return (200, ["query": "cats", "results": [hit]])
+                // Sidecar wraps tool_search return as {"results": <tool_search_dict>}.
+                return (200, ["results": ["query": "cats", "results": [hit]]])
             default:
                 return (200, [:])
             }
@@ -160,7 +161,7 @@ final class MemPalacePluginTests: XCTestCase {
         stub.responder = { tool, _ in
             switch tool {
             case "mempalace_add_drawer":
-                return (200, ["success": true, "drawer_id": "d-del", "wing": "w", "room": "r"])
+                return (200, ["added": true, "drawer_id": "d-del", "result": "ok"])
             case "mempalace_delete_drawer":
                 return (200, ["success": true, "drawer_id": "d-del"])
             default:
@@ -190,7 +191,7 @@ final class MemPalacePluginTests: XCTestCase {
             switch tool {
             case "mempalace_add_drawer":
                 // MemPalace dedup: identical content → same drawer_id.
-                return (200, ["success": true, "drawer_id": "d-shared", "wing": "w", "room": "r"])
+                return (200, ["added": true, "drawer_id": "d-shared", "result": "ok"])
             case "mempalace_delete_drawer":
                 return (200, ["success": true, "drawer_id": "d-shared"])
             default:
@@ -217,7 +218,7 @@ final class MemPalacePluginTests: XCTestCase {
         stub.responder = { tool, _ in
             switch tool {
             case "mempalace_add_drawer":
-                return (200, ["success": true, "drawer_id": "d-shared", "wing": "w", "room": "r"])
+                return (200, ["added": true, "drawer_id": "d-shared", "result": "ok"])
             case "mempalace_delete_drawer":
                 return (200, ["success": true, "drawer_id": "d-shared"])
             default:
@@ -241,7 +242,7 @@ final class MemPalacePluginTests: XCTestCase {
     func testSidecarPersistsAcrossActivate() async throws {
         let stub = StubMCP()
         stub.responder = { _, _ in
-            (200, ["success": true, "drawer_id": "d-persist", "wing": "w", "room": "r"])
+            (200, ["added": true, "drawer_id": "d-persist", "result": "ok"])
         }
 
         let host = try configuredHost()

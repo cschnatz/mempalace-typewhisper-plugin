@@ -29,25 +29,35 @@ enum MemPalaceMCPError: LocalizedError {
 
 // MARK: - Response models for MemPalace tool outputs
 
+// Sidecar wraps tool returns inconsistently. The wire shapes below match
+// apps/sidecar/sidecar.py dispatch, not the bare tool_* return values.
+
+// add_drawer: sidecar wraps as {"added": true, "drawer_id": "...", "result": "<str>"}.
+// On tool error the inner result string contains the error; success is implied by
+// non-nil drawer_id.
 struct MemPalaceAddDrawerResult: Decodable {
-    let success: Bool
+    let added: Bool?
     let drawer_id: String?
-    let wing: String?
-    let room: String?
-    let reason: String?
-    let error: String?
+    let result: String?
 }
 
+// delete_drawer: sidecar passes the tool result through verbatim → {success, drawer_id?, error?}
 struct MemPalaceDeleteDrawerResult: Decodable {
     let success: Bool
     let drawer_id: String?
     let error: String?
 }
 
+// update_drawer: sidecar wraps as {"updated": true, "result": <tool_dict>}
 struct MemPalaceUpdateDrawerResult: Decodable {
-    let success: Bool
-    let drawer_id: String?
-    let error: String?
+    let updated: Bool?
+    let result: UpdateInner?
+
+    struct UpdateInner: Decodable {
+        let success: Bool?
+        let drawer_id: String?
+        let error: String?
+    }
 }
 
 struct MemPalaceSearchHit: Decodable {
@@ -59,16 +69,38 @@ struct MemPalaceSearchHit: Decodable {
     let distance: Double?
 }
 
+// search: sidecar wraps as {"results": <tool_search_dict>} where tool_search dict
+// is {query, filters, total_before_filter, results: [hits], error?}.
 struct MemPalaceSearchResult: Decodable {
-    let query: String?
-    let results: [MemPalaceSearchHit]?
-    let error: String?
+    let results: SearchInner?
+
+    struct SearchInner: Decodable {
+        let query: String?
+        let results: [MemPalaceSearchHit]?
+        let error: String?
+    }
+
+    var hits: [MemPalaceSearchHit] { results?.results ?? [] }
+    var errorMessage: String? { results?.error }
 }
 
-struct MemPalaceTaxonomyResult: Decodable {
-    let wings: [String: Int]?
-    let rooms: [String: Int]?
-    let wing: String?
+// list_wings: {"wings": {"wings": {name: count, ...}}}
+struct MemPalaceListWingsResult: Decodable {
+    let wings: WingsInner?
+
+    struct WingsInner: Decodable {
+        let wings: [String: Int]?
+    }
+}
+
+// list_rooms: {"rooms": {"wing": "...", "rooms": {name: count, ...}}}
+struct MemPalaceListRoomsResult: Decodable {
+    let rooms: RoomsInner?
+
+    struct RoomsInner: Decodable {
+        let wing: String?
+        let rooms: [String: Int]?
+    }
 }
 
 // MARK: - HTTP abstraction
@@ -113,11 +145,9 @@ final class MemPalaceMCPClient {
         ]
         if let sourceFile { args["source_file"] = sourceFile }
         let result: MemPalaceAddDrawerResult = try await callTool("mempalace_add_drawer", arguments: args)
-        guard result.success else {
-            throw MemPalaceMCPError.toolError(result.error ?? "add_drawer failed")
-        }
-        guard let drawerId = result.drawer_id else {
-            throw MemPalaceMCPError.toolError("add_drawer returned no drawer_id")
+        guard let drawerId = result.drawer_id, !drawerId.isEmpty else {
+            // sidecar puts error detail into `result` field as Python str()
+            throw MemPalaceMCPError.toolError(result.result ?? "add_drawer returned no drawer_id")
         }
         return drawerId
     }
@@ -138,8 +168,12 @@ final class MemPalaceMCPClient {
             "mempalace_update_drawer",
             arguments: ["drawer_id": drawerId, "content": content]
         )
-        guard result.success else {
-            throw MemPalaceMCPError.toolError(result.error ?? "update_drawer failed")
+        // Sidecar shape: {"updated": true, "result": {success, drawer_id, error?}}.
+        if let inner = result.result, inner.success == false, let err = inner.error {
+            throw MemPalaceMCPError.toolError(err)
+        }
+        if result.updated != true && result.result?.success != true {
+            throw MemPalaceMCPError.toolError("update_drawer failed")
         }
     }
 
@@ -150,24 +184,26 @@ final class MemPalaceMCPClient {
             "mempalace_search",
             arguments: args
         )
-        if let err = result.error { throw MemPalaceMCPError.toolError(err) }
-        return result.results ?? []
+        if let err = result.errorMessage { throw MemPalaceMCPError.toolError(err) }
+        return result.hits
     }
 
     func listWings() async throws -> [String] {
-        let result: MemPalaceTaxonomyResult = try await callTool(
+        let result: MemPalaceListWingsResult = try await callTool(
             "mempalace_list_wings",
             arguments: [:]
         )
-        return (result.wings.map { Array($0.keys) } ?? []).sorted()
+        let dict = result.wings?.wings ?? [:]
+        return Array(dict.keys).sorted()
     }
 
     func listRooms(wing: String) async throws -> [String] {
-        let result: MemPalaceTaxonomyResult = try await callTool(
+        let result: MemPalaceListRoomsResult = try await callTool(
             "mempalace_list_rooms",
             arguments: ["wing": wing]
         )
-        return (result.rooms.map { Array($0.keys) } ?? []).sorted()
+        let dict = result.rooms?.rooms ?? [:]
+        return Array(dict.keys).sorted()
     }
 
     func ping() async throws {

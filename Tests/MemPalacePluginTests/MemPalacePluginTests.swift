@@ -340,4 +340,55 @@ final class MemPalacePluginTests: XCTestCase {
         XCTAssertEqual(listed.count, 1)
         XCTAssertEqual(listed.first?.content, "ok-stored")
     }
+
+    func testDeletePartialFailureRemovesOnlySuccessfulDrawersFromSidecar() async throws {
+        // SeoFood maintainer feedback on PR #588 round 3 (MemPalacePlugin.swift:197):
+        // If the second remote delete fails after the first one succeeded, the
+        // method must NOT leave a stale local handle to the already-deleted
+        // drawer. Sidecar entries are removed incrementally after each
+        // successful server-delete; failed drawers keep their mappings.
+        let stub = StubMCP()
+        nonisolated(unsafe) var deleteCallCount = 0
+        stub.responder = { tool, args in
+            switch tool {
+            case "mempalace_add_drawer":
+                let content = args["content"] as? String ?? ""
+                let drawerId = "drawer-\(content)"
+                return (200, ["added": true, "drawer_id": drawerId, "result": "ok"])
+            case "mempalace_delete_drawer":
+                deleteCallCount += 1
+                // First server-delete succeeds, second throws (simulates 500 / transient).
+                if deleteCallCount == 1 {
+                    return (200, ["success": true, "drawer_id": args["drawer_id"] ?? ""])
+                } else {
+                    return (500, ["error": "upstream blip"])
+                }
+            default:
+                return (200, [:])
+            }
+        }
+
+        let host = try configuredHost()
+        let plugin = makePlugin(http: stub)
+        plugin.activate(host: host)
+
+        let entryA = MemoryEntry(content: "first", type: .fact)
+        let entryB = MemoryEntry(content: "second", type: .fact)
+        try await plugin.store([entryA, entryB])
+        let before = try await plugin.listAll(offset: 0, limit: 10)
+        XCTAssertEqual(before.count, 2)
+
+        // Delete both. One server-delete will succeed, the other will throw.
+        do {
+            try await plugin.delete([entryA.id, entryB.id])
+            XCTFail("delete must surface the partial failure")
+        } catch {
+            // expected
+        }
+
+        // Exactly one entry must remain in the sidecar — the one whose
+        // server-delete failed. The succeeded one is gone locally.
+        let remaining = try await plugin.listAll(offset: 0, limit: 10)
+        XCTAssertEqual(remaining.count, 1, "exactly one entry must remain after partial failure")
+    }
 }

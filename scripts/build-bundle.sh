@@ -142,21 +142,62 @@ cat > "$BUNDLE/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# --- Step 5: Code sign ad-hoc ---
-echo ""
-echo "--- Code signing (ad-hoc) ---"
-codesign --force --sign - --deep "$BUNDLE"
-codesign --verify --strict "$BUNDLE"
+# --- Step 5: Load notarization credentials ---
+# Order: existing env vars, then .env fallback (local dev convenience).
+SIGN_ENV_FILE="${SIGN_ENV_FILE:-$ROOT/../../saas/WisprFlow/archive/desktop-app/.env}"
+if [[ -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PASSWORD:-}" ]]; then
+  if [[ -f "$SIGN_ENV_FILE" ]]; then
+    set -a; source "$SIGN_ENV_FILE"; set +a
+  fi
+fi
+SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Christian Schnatz (GKUVCXLGL4)}"
 
-# --- Step 6: Zip ---
+if [[ -z "${APPLE_ID:-}" || -z "${APPLE_TEAM_ID:-}" || -z "${APPLE_PASSWORD:-}" ]]; then
+  echo "ERROR: APPLE_ID / APPLE_TEAM_ID / APPLE_PASSWORD not set and $SIGN_ENV_FILE not found." >&2
+  exit 1
+fi
+
+# --- Step 6: Code sign with Developer ID (inside-out, no --deep) ---
+echo ""
+echo "--- Code signing (Developer ID, hardened runtime) ---"
+codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+  "$BUNDLE/Contents/MacOS/MemPalacePlugin"
+codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$BUNDLE"
+codesign --verify --strict --verbose=2 "$BUNDLE"
+
+# --- Step 7: Zip ---
 echo ""
 echo "--- Zipping bundle ---"
+(cd "$OUT_DIR" && ditto -ck --sequesterRsrc --keepParent MemPalacePlugin.bundle MemPalacePlugin.zip)
+
+# --- Step 8: Notarize ---
+echo ""
+echo "--- Submitting to notarytool (this can take several minutes) ---"
+xcrun notarytool submit "$OUT_DIR/MemPalacePlugin.zip" \
+  --apple-id "$APPLE_ID" \
+  --team-id "$APPLE_TEAM_ID" \
+  --password "$APPLE_PASSWORD" \
+  --wait
+
+# --- Step 9: Staple ticket onto the bundle, then re-zip ---
+# stapler does NOT support .zip archives. Apple's documented flow:
+# notarize zip -> staple bundle -> re-zip so the distributed zip contains
+# the stapled bundle. The ticket lives in Contents/CodeResources and
+# survives ditto's xattr-preserving zip.
+echo ""
+echo "--- Stapling ticket onto bundle ---"
+xcrun stapler staple "$BUNDLE"
+xcrun stapler validate "$BUNDLE"
+
+echo ""
+echo "--- Re-zipping stapled bundle ---"
+rm -f "$OUT_DIR/MemPalacePlugin.zip"
 (cd "$OUT_DIR" && ditto -ck --sequesterRsrc --keepParent MemPalacePlugin.bundle MemPalacePlugin.zip)
 
 echo ""
 echo "=== DONE ==="
 echo "Bundle:  $BUNDLE"
-echo "ZIP:     $OUT_DIR/MemPalacePlugin.zip"
+echo "ZIP:     $OUT_DIR/MemPalacePlugin.zip (signed + notarized + stapled)"
 echo ""
 echo "Install via TypeWhisper:"
 echo "  Settings -> Integrations -> Install from File"
